@@ -37,12 +37,24 @@ class CvApplicationWriteSerializer(serializers.ModelSerializer):
     # application must start at the model's default (0 / "Шинэ"); letting
     # the field through here would let any anonymous submitter self-approve
     # their own application by posting status=2 directly.
+    #
+    # 'cv_file' is read_only for the exact same reason: it must only ever be
+    # set server-side, from the validated multipart upload result (see
+    # CvApplicationViewSet.create in app/views/cv_application.py). It's a
+    # plain TextField with no URL/format validation at the model level —
+    # letting the client set it directly (as ordinary request data, no file
+    # needed at all) would bypass every bit of magic-byte/size/MIME
+    # validation and let arbitrary text (including a javascript: URI) get
+    # stored and later rendered as an href in the admin panel's CV list.
     class Meta:
         model = CvApplication
         fields = [
             'first_name', 'last_name', 'email', 'phone',
             'position', 'experience', 'message', 'cv_file', 'job',
         ]
+        extra_kwargs = {
+            'cv_file': {'read_only': True},
+        }
 
     def validate_first_name(self, value):
         if not value or not value.strip():

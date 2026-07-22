@@ -1,5 +1,6 @@
 import logging
 import mimetypes
+from urllib.parse import urlparse
 
 from rest_framework import viewsets, status
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
@@ -28,6 +29,23 @@ CV_ALLOWED_MIME_TYPES = {
 CV_MAX_SIZE = 10 * 1024 * 1024  # 10MB
 
 
+def _is_safe_stored_url(value):
+    """
+    Last-line guard on whatever upload_file() returns before it's persisted
+    to cv_file: only a root-relative path (local/SFTP storage) or an
+    absolute http(s) URL (S3/CDN) is acceptable. Rejects javascript:, data:,
+    file:, vbscript:, or any other scheme outright — cv_file is rendered as
+    an <a href> in the admin panel, so anything else stored there is a
+    stored-XSS payload waiting for a staff member to click it.
+    """
+    if not value:
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme in ('http', 'https'):
+        return True
+    return not parsed.scheme and value.startswith('/')
+
+
 class CvApplicationViewSet(viewsets.ModelViewSet):
     permission_classes = [PublicCreateStaffManage]
     queryset = CvApplication.objects.all()
@@ -48,9 +66,26 @@ class CvApplicationViewSet(viewsets.ModelViewSet):
         return super().get_throttles()
 
     def create(self, request, *args, **kwargs):
+        # Anonymous, public endpoint — only a real multipart upload is
+        # accepted. Blocks the JSON/urlencoded route entirely, closing off
+        # the easiest way to submit a plain-text cv_file with no file
+        # attached at all (see CvApplicationWriteSerializer's read_only
+        # cv_file for the actual enforcement; this is the earlier gate).
+        if not (request.content_type or '').startswith('multipart/form-data'):
+            return Response(
+                {'detail': 'Хүсэлт multipart/form-data төрөлтэй байх ёстой.'},
+                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
+
         data = request.data.copy()
+        # cv_file is read_only on the serializer (so this would be ignored
+        # during validation regardless), but drop it here too — it must
+        # never be treated as anything other than the server-generated
+        # upload URL below.
+        data.pop('cv_file', None)
         cv_file = request.FILES.get('cv_file')
 
+        file_url = ''
         if cv_file:
             if cv_file.size > CV_MAX_SIZE:
                 return Response(
@@ -74,7 +109,6 @@ class CvApplicationViewSet(viewsets.ModelViewSet):
 
             try:
                 file_url = upload_file(cv_file, folder='bichil/cv', resource_type='raw')
-                data['cv_file'] = file_url
             except Exception:
                 logger.exception('[cv_application] CV file upload failed')
                 return Response(
@@ -82,9 +116,16 @@ class CvApplicationViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
+            if not _is_safe_stored_url(file_url):
+                logger.error('[cv_application] Storage returned an unsafe URL, refusing to persist: %r', file_url)
+                return Response(
+                    {'detail': 'CV файл хадгалахад алдаа гарлаа. Дахин оролдоно уу.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(cv_file=file_url)
         return Response(
             CvApplicationReadSerializer(serializer.instance).data,
             status=status.HTTP_201_CREATED,

@@ -1,5 +1,8 @@
+import re
+
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, re_path, include
+from django.views.static import serve as static_serve
 from app.categories.urls import router
 from app.product.urls import router as product_router
 from app.utilities.urls import router as document_router
@@ -60,5 +63,27 @@ urlpatterns = [
 ]
 
 # Зураг, видео нуу MEDIA файлуудыг хадгалах
-# Development болон Production дээ хадгалах
+# Development дээр ажиллана — Django's static() is a documented no-op
+# whenever DEBUG=False, so it contributes nothing in production.
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+
+# Production fallback for local-disk media storage. render.yaml provisions a
+# persistent disk for /media and never configures USE_S3_STORAGE — i.e. the
+# committed deployment IS local FileSystemStorage — so without an explicit,
+# always-on route here, static() above being DEBUG-gated means every
+# uploaded file 404s in production. Only registered when local storage is
+# actually in play: S3 serves media from its own domain directly (never
+# touches this app), and SFTP storage already has its own always-on route
+# via SFTPMediaMiddleware (app/sftp_middleware.py). django.views.static.serve
+# is the same view static() itself uses — not introducing a new pattern,
+# just removing the DEBUG gate for the one storage mode this deployment
+# actually uses; Django's own path-traversal protection in `serve` applies
+# here exactly as it does in development.
+if not settings.DEBUG and not settings.USE_S3_STORAGE and not settings.USE_SFTP_STORAGE:
+    urlpatterns += [
+        re_path(
+            r'^%s(?P<path>.*)$' % re.escape(settings.MEDIA_URL.lstrip('/')),
+            static_serve,
+            {'document_root': settings.MEDIA_ROOT},
+        ),
+    ]
