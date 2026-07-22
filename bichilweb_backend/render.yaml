@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: bichilweb-backend
+    env: python
+    region: oregon
+    plan: standard
+    buildCommand: chmod +x build.sh && ./build.sh
+    startCommand: gunicorn bichilglobusweb.wsgi:application --bind 0.0.0.0:$PORT --workers ${WEB_CONCURRENCY:-2} --threads 4 --timeout 120 --graceful-timeout 30 --max-requests 1000 --max-requests-jitter 100 --access-logfile - --error-logfile -
+    envVars:
+      - key: DEBUG
+        value: "False"
+      - key: ALLOWED_HOSTS
+        value: "bichilweb-backend.onrender.com,localhost,127.0.0.1"
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://bichilweb.onrender.com,https://bichilweb-vxeh.onrender.com,https://bichilweb-admin-ovs1.onrender.com,http://localhost:3000,http://localhost:3001"
+      - key: USE_SFTP_STORAGE
+        value: "False"
+      - key: STATIC_ROOT
+        value: "/opt/render/project/src/staticfiles"
+      - key: MEDIA_ROOT
+        value: "/opt/render/project/src/media"
+      - key: MEDIA_URL
+        value: "/media/"
+
+    # Persistent disk for media files
+    disk:
+      name: media-storage
+      mountPath: /opt/render/project/src/media
+      sizeGB: 5
+
+    # Serve media files as static
+    staticPreCompile: false
